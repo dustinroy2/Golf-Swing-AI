@@ -21,3 +21,9 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Claude local settings
+src/.claude/
+
+# Duplicate assets (served from /public/assets/)
+src/assets/
