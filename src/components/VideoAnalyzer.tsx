@@ -1,4 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
+import {
+  detectSwingPhases,
+  DetectedPhases,
+  CONFIDENCE_TRUST,
+  CONFIDENCE_LOW,
+} from './SwingStateMachine';
 
 interface Fault {
   name: string;
@@ -15,12 +21,12 @@ interface AnalysisResult {
 }
 
 export default function VideoAnalyzer() {
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string>('');
-  const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [videoFile, setVideoFile]   = useState<File | null>(null);
+  const [videoUrl, setVideoUrl]     = useState<string>('');
+  const [analyzing, setAnalyzing]   = useState(false);
+  const [result, setResult]         = useState<AnalysisResult | null>(null);
   const [currentPhase, setCurrentPhase] = useState<string>('');
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef  = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -29,79 +35,69 @@ export default function VideoAnalyzer() {
       setVideoFile(file);
       setVideoUrl(URL.createObjectURL(file));
       setResult(null);
+      setCurrentPhase('');
     }
   };
 
-  const speakResult = (result: AnalysisResult) => {
-    if ('speechSynthesis' in window) {
-      const text = `Score ${result.score}. ${
-        result.faults.length > 0
-          ? `Primary fault: ${result.faults[0].name}. Drill: ${result.faults[0].drill}`
-          : 'Great swing! No major faults detected.'
-      }`;
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      window.speechSynthesis.speak(utterance);
-    }
+  const speakResult = (res: AnalysisResult) => {
+    if (!('speechSynthesis' in window)) return;
+    const text = `Score ${res.score}. ${
+      res.faults.length > 0
+        ? `Primary fault: ${res.faults[0].name}. Drill: ${res.faults[0].drill}`
+        : 'Great swing! No major faults detected.'
+    }`;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9;
+    window.speechSynthesis.speak(utterance);
   };
 
   const analyzeSwing = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     setAnalyzing(true);
-    setCurrentPhase('Loading pose detection model...');
+    setResult(null);
 
     try {
+      setCurrentPhase('Loading pose detection model...');
       const tf = await import('@tensorflow/tfjs');
       await import('@tensorflow/tfjs-backend-webgl');
       await tf.setBackend('webgl');
       await tf.ready();
 
       const poseDetection = await import('@tensorflow-models/pose-detection');
-      setCurrentPhase('Model loaded. Analyzing swing phases...');
-
+      // Lightning: ~15ms/frame on modern hardware — fast enough for the web prototype.
+      // Switch to Thunder for higher accuracy if needed (costs ~5× more time per frame).
       const detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
-        {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
-        }
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
 
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d')!;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const phases = await detectSwingPhases(
+        videoRef.current,
+        canvasRef.current,
+        detector,
+        setCurrentPhase
+      );
 
-      const phases = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
-      const poseData: any[] = [];
-      const duration = video.duration;
-      const sampleTimes = [0.05, 0.25, 0.5, 0.75, 0.95];
-
-      for (let i = 0; i < sampleTimes.length; i++) {
-        setCurrentPhase(`Analyzing ${phases[i]}...`);
-        video.currentTime = duration * sampleTimes[i];
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const poses = await detector.estimatePoses(canvas);
-
-        if (poses.length > 0) {
-          poseData.push({ phase: phases[i], pose: poses[0], time: sampleTimes[i] });
-          drawPoseOnCanvas(ctx, poses[0], canvas.width, canvas.height);
-        }
+      if (!phases) {
+        setCurrentPhase('Could not detect swing. Ensure the full body is visible with good lighting.');
+        setAnalyzing(false);
+        return;
       }
 
       setCurrentPhase('Calculating faults...');
-      const analysisResult = calculateFaults(poseData);
+      drawImpactFrame(phases.impact.pose);
+
+      const frameWidth  = canvasRef.current.width;
+      const frameHeight = canvasRef.current.height;
+      const analysisResult = calculateFaults(phases, frameWidth, frameHeight);
       setResult(analysisResult);
       setCurrentPhase('');
       speakResult(analysisResult);
 
-      // Save to history
       const history = JSON.parse(localStorage.getItem('swingHistory') || '[]');
       history.unshift({
-        date: new Date().toISOString(),
-        score: analysisResult.score,
+        date:   new Date().toISOString(),
+        score:  analysisResult.score,
         faults: analysisResult.faults.map(f => f.name),
       });
       localStorage.setItem('swingHistory', JSON.stringify(history.slice(0, 50)));
@@ -110,15 +106,28 @@ export default function VideoAnalyzer() {
       console.error(err);
       setCurrentPhase('Error analyzing swing. Please try again.');
     }
+
     setAnalyzing(false);
   };
 
-  const drawPoseOnCanvas = (ctx: CanvasRenderingContext2D, pose: any, width: number, height: number) => {
+  // Draw the impact frame pose on canvas — confidence-gated per SRD:
+  // green dot  = score >= 0.7 (trusted)
+  // yellow dot = score 0.5–0.7 (low confidence, shown but excluded from faults)
+  // hidden     = score < 0.5
+  const drawImpactFrame = (pose: any) => {
+    const canvas = canvasRef.current;
+    const video  = videoRef.current;
+    if (!canvas || !video) return;
+    const ctx = canvas.getContext('2d')!;
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
     const keypoints = pose.keypoints;
     const connections = [
       [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
       [5, 11], [6, 12], [11, 12], [11, 13], [13, 15],
-      [12, 14], [14, 16]
+      [12, 14], [14, 16],
     ];
 
     ctx.strokeStyle = '#58a6ff';
@@ -126,7 +135,7 @@ export default function VideoAnalyzer() {
     connections.forEach(([a, b]) => {
       const kpA = keypoints[a];
       const kpB = keypoints[b];
-      if (kpA.score > 0.5 && kpB.score > 0.5) {
+      if ((kpA.score ?? 0) >= CONFIDENCE_LOW && (kpB.score ?? 0) >= CONFIDENCE_LOW) {
         ctx.beginPath();
         ctx.moveTo(kpA.x, kpA.y);
         ctx.lineTo(kpB.x, kpB.y);
@@ -135,123 +144,114 @@ export default function VideoAnalyzer() {
     });
 
     keypoints.forEach((kp: any) => {
-      if (kp.score > 0.5) {
-        const color = kp.score > 0.7 ? '#3fb950' : kp.score > 0.5 ? '#d29922' : '#8b949e';
+      const score = kp.score ?? 0;
+      if (score >= CONFIDENCE_TRUST) {
         ctx.beginPath();
         ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-        ctx.fillStyle = color;
+        ctx.fillStyle = '#3fb950'; // green — trusted
         ctx.fill();
+      } else if (score >= CONFIDENCE_LOW) {
+        ctx.beginPath();
+        ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+        ctx.fillStyle = '#8b949e'; // gray — low confidence
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('?', kp.x, kp.y + 3);
       }
+      // score < CONFIDENCE_LOW: render nothing
     });
   };
 
-  const calculateFaults = (poseData: any[]): AnalysisResult => {
+  const calculateFaults = (
+    phases:      DetectedPhases,
+    frameWidth:  number,
+    frameHeight: number
+  ): AnalysisResult => {
     const faults: Fault[] = [];
     let score = 100;
+    const { address, top, impact } = phases;
 
-    if (poseData.length < 3) {
-      return { score: 0, faults: [], phases: [] };
-    }
+    // Only include a joint in fault calculation if confidence >= CONFIDENCE_TRUST (0.7)
+    const trusted = (kp: any) => (kp.score ?? 0) >= CONFIDENCE_TRUST;
 
-    const address = poseData.find(p => p.phase === 'Address')?.pose;
-    const top = poseData.find(p => p.phase === 'Top')?.pose;
-    const impact = poseData.find(p => p.phase === 'Impact')?.pose;
-
-    // Check shoulder tilt at address
-    if (address) {
-      const leftShoulder = address.keypoints[5];
-      const rightShoulder = address.keypoints[6];
-      if (leftShoulder.score > 0.6 && rightShoulder.score > 0.6) {
-        const tilt = Math.abs(leftShoulder.y - rightShoulder.y);
-        const frameHeight = 480;
-        if (tilt / frameHeight > 0.08) {
-          faults.push({
-            name: 'Shoulder Tilt at Address',
-            phase: 'Address',
-            description: 'Your shoulders are not level at address.',
-            drill: 'Stand in front of a mirror and place a club across your shoulders. Practice setting up with the club parallel to the ground.',
-            severity: 'yellow',
-          });
-          score -= 15;
-        }
+    // ── Shoulder Tilt at Address (Phase 0) ───────────────────────────────────
+    const addrLS = address.pose.keypoints[5];
+    const addrRS = address.pose.keypoints[6];
+    if (trusted(addrLS) && trusted(addrRS)) {
+      const tilt = Math.abs(addrLS.y - addrRS.y) / frameHeight;
+      if (tilt > 0.08) {
+        faults.push({
+          name: 'Shoulder Tilt at Address',
+          phase: 'Address',
+          description: 'Your shoulders are not level at address.',
+          drill: 'Place a club across your shoulders and set up in front of a mirror. Practice until the club sits parallel to the ground.',
+          severity: 'yellow',
+        });
+        score -= 15;
       }
     }
 
-    // Check head movement (head up at impact)
-    if (address && impact) {
-      const addressNose = address.keypoints[0];
-      const impactNose = impact.keypoints[0];
-      if (addressNose.score > 0.6 && impactNose.score > 0.6) {
-        const headRise = addressNose.y - impactNose.y;
-        const frameHeight = 480;
-        if (headRise / frameHeight > 0.06) {
-          faults.push({
-            name: 'Head Up at Impact',
-            phase: 'Impact',
-            description: 'Your head is rising before impact — you are coming out of the shot.',
-            drill: 'Keep your eyes focused on the back of the ball until after impact. Practice with a tee in the ground and try to see the tee after you swing.',
-            severity: 'red',
-          });
-          score -= 20;
-        }
+    // ── Reverse Pivot (Phase 2 — Top) ────────────────────────────────────────
+    const addrLS2 = address.pose.keypoints[5];
+    const topLS   = top.pose.keypoints[5];
+    if (trusted(addrLS2) && trusted(topLS)) {
+      const shoulderShift = (topLS.x - addrLS2.x) / frameWidth;
+      if (shoulderShift > 0.08) {
+        faults.push({
+          name: 'Reverse Pivot',
+          phase: 'Top',
+          description: 'Your weight is shifting toward the target on the backswing.',
+          drill: 'Stand with your back against a wall. Your trail hip should graze the wall on the backswing — not your lead hip.',
+          severity: 'red',
+        });
+        score -= 20;
       }
     }
 
-    // Check early extension (hips moving toward ball)
-    if (address && impact) {
-      const addressLeftHip = address.keypoints[11];
-      const impactLeftHip = impact.keypoints[11];
-      if (addressLeftHip.score > 0.6 && impactLeftHip.score > 0.6) {
-        const hipThrust = Math.abs(addressLeftHip.x - impactLeftHip.x);
-        const frameWidth = 640;
-        if (hipThrust / frameWidth > 0.1) {
-          faults.push({
-            name: 'Early Extension',
-            phase: 'Impact',
-            description: 'Your hips are thrusting toward the ball through impact.',
-            drill: 'Place a headcover behind your right heel at address. Focus on keeping your hips back and rotating around your spine through impact.',
-            severity: 'red',
-          });
-          score -= 20;
-        }
+    // ── Head Up at Impact (Phase 3) ──────────────────────────────────────────
+    const addrNose = address.pose.keypoints[0];
+    const impNose  = impact.pose.keypoints[0];
+    if (trusted(addrNose) && trusted(impNose)) {
+      const headRise = (addrNose.y - impNose.y) / frameHeight;
+      if (headRise > 0.06) {
+        faults.push({
+          name: 'Head Up at Impact',
+          phase: 'Impact',
+          description: 'Your head is rising before impact — you are coming out of the shot.',
+          drill: 'Focus on the back of the ball until after impact. Put a tee in the ground and try to see it after the swing.',
+          severity: 'red',
+        });
+        score -= 20;
       }
     }
 
-    // Check reverse pivot at top
-    if (address && top) {
-      const addressLeftHip = address.keypoints[11];
-      const topLeftHip = top.keypoints[11];
-      const addressLeftShoulder = address.keypoints[5];
-      const topLeftShoulder = top.keypoints[5];
-      if (
-        addressLeftHip.score > 0.6 && topLeftHip.score > 0.6 &&
-        addressLeftShoulder.score > 0.6 && topLeftShoulder.score > 0.6
-      ) {
-        const shoulderShift = topLeftShoulder.x - addressLeftShoulder.x;
-        const frameWidth = 640;
-        if (shoulderShift / frameWidth > 0.08) {
-          faults.push({
-            name: 'Reverse Pivot',
-            phase: 'Top',
-            description: 'Your weight is shifting toward the target on the backswing.',
-            drill: 'Feel your right hip turning behind you on the backswing. Practice with your back against a wall — your right hip should graze the wall as you turn back.',
-            severity: 'red',
-          });
-          score -= 20;
-        }
+    // ── Early Extension (Phase 3 — Impact) ───────────────────────────────────
+    const addrLH = address.pose.keypoints[11];
+    const impLH  = impact.pose.keypoints[11];
+    if (trusted(addrLH) && trusted(impLH)) {
+      const hipThrust = Math.abs(addrLH.x - impLH.x) / frameWidth;
+      if (hipThrust > 0.1) {
+        faults.push({
+          name: 'Early Extension',
+          phase: 'Impact',
+          description: 'Your hips are thrusting toward the ball through impact.',
+          drill: 'Place a headcover behind your trail heel at address. Keep your hips back and rotate around your spine through impact.',
+          severity: 'red',
+        });
+        score -= 20;
       }
     }
 
-    // Limit to top 2 faults (chronological)
+    // Chronological triage — report top 2 faults by phase order (fix root cause first)
     const phaseOrder = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
     faults.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
-    const topFaults = faults.slice(0, 2);
-    const finalScore = Math.max(0, score + (faults.length - topFaults.length) * 0);
 
     return {
-      score: Math.max(0, finalScore),
-      faults: topFaults,
-      phases: poseData.map(p => p.phase),
+      score:  Math.max(0, score),
+      faults: faults.slice(0, 2),
+      phases: ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'],
     };
   };
 
@@ -304,6 +304,12 @@ export default function VideoAnalyzer() {
         </div>
       )}
 
+      {!analyzing && currentPhase && (
+        <div className="analyzing-status error">
+          <span>⚠️ {currentPhase}</span>
+        </div>
+      )}
+
       {result && (
         <div className="results">
           <div className="score-card">
@@ -316,9 +322,7 @@ export default function VideoAnalyzer() {
           </div>
 
           {result.faults.length === 0 ? (
-            <div className="no-faults">
-              ✅ Great swing! No major faults detected.
-            </div>
+            <div className="no-faults">✅ Great swing! No major faults detected.</div>
           ) : (
             <div className="faults-list">
               <h3>Top Faults Found</h3>
