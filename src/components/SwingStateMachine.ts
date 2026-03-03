@@ -20,11 +20,12 @@ export interface SwingFrame {
 }
 
 export interface DetectedPhases {
-  address:       SwingFrame;
-  takeaway:      SwingFrame;
-  top:           SwingFrame;
-  impact:        SwingFrame;
-  followThrough: SwingFrame;
+  address:        SwingFrame;
+  takeaway:       SwingFrame;
+  top:            SwingFrame;
+  impact:         SwingFrame;
+  followThrough:  SwingFrame;
+  sampleInterval: number; // seconds between dense-scan frames — used to calculate timing uncertainty
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -208,11 +209,14 @@ export async function detectSwingPhases(
   // Fallback: last frame in window (e.g. golfer holds a long finish pose)
   if (followIdx === null) followIdx = frames.length - 1;
 
+  const sampleInterval = (swingEnd - swingStart) / (DENSE_SAMPLES - 1);
+
   return {
-    address:       frames[addressIdx],
-    takeaway:      frames[takeawayIdx],
-    top:           frames[resolvedTopIdx],
-    impact:        frames[impactIdx],
-    followThrough: frames[followIdx],
+    address:        frames[addressIdx],
+    takeaway:       frames[takeawayIdx],
+    top:            frames[resolvedTopIdx],
+    impact:         frames[impactIdx],
+    followThrough:  frames[followIdx],
+    sampleInterval,
   };
 }

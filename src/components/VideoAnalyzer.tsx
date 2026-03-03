@@ -5,6 +5,16 @@ import {
   CONFIDENCE_TRUST,
   CONFIDENCE_LOW,
 } from './SwingStateMachine';
+import TempoChart from './TempoChart';
+
+// requestVideoFrameCallback is not yet in TypeScript's lib — declare it here
+declare global {
+  interface HTMLVideoElement {
+    requestVideoFrameCallback(
+      callback: (now: DOMHighResTimeStamp, metadata: { mediaTime: number; presentedFrames: number }) => void
+    ): number;
+  }
+}
 
 interface Fault {
   name: string;
@@ -20,23 +30,150 @@ interface AnalysisResult {
   phases: string[];
 }
 
+interface TempoResult {
+  ratioLow:      number;
+  ratioHigh:     number;
+  ratioMid:      number;
+  backswingTime: number;
+  downswingTime: number;
+}
+
+interface VideoMeta {
+  fps:      number;
+  fpsTier:  'low' | 'medium' | 'high';
+  width:    number;
+  height:   number;
+  duration: number;
+}
+
+// ─── Background FPS detection ─────────────────────────────────────────────────
+// Creates an offscreen muted video, plays 0.5s, counts requestVideoFrameCallback
+// ticks to measure actual encoded frame rate. Falls back to 30 if API unavailable.
+async function detectVideoMeta(file: File): Promise<VideoMeta> {
+  return new Promise(resolve => {
+    const video = document.createElement('video');
+    video.muted      = true;
+    video.playsInline = true;
+    const url = URL.createObjectURL(file);
+    video.src = url;
+
+    const finish = (fps: number) => {
+      video.pause();
+      URL.revokeObjectURL(url);
+      const w = video.videoWidth  || 0;
+      const h = video.videoHeight || 0;
+      resolve({
+        fps,
+        fpsTier:  fps >= 120 ? 'high' : fps >= 60 ? 'medium' : 'low',
+        width:    w,
+        height:   h,
+        duration: video.duration || 0,
+      });
+    };
+
+    video.addEventListener('loadedmetadata', () => {
+      if (!('requestVideoFrameCallback' in video)) {
+        finish(30); // API not available — assume 30fps
+        return;
+      }
+
+      let frameCount    = 0;
+      let startTime: number | null = null;
+      const SAMPLE_WINDOW = Math.min(0.5, (video.duration || 0.5) * 0.8);
+
+      const countFrame = (_now: DOMHighResTimeStamp, meta: { mediaTime: number }) => {
+        if (startTime === null) startTime = meta.mediaTime;
+        frameCount++;
+        const elapsed = meta.mediaTime - startTime;
+        if (elapsed >= SAMPLE_WINDOW) {
+          finish(Math.round(frameCount / elapsed));
+        } else {
+          video.requestVideoFrameCallback(countFrame);
+        }
+      };
+
+      // Safety timeout — if callbacks stall, resolve with what we have
+      const timeout = setTimeout(() => {
+        if (startTime !== null && frameCount > 1) {
+          finish(Math.round(frameCount / (SAMPLE_WINDOW)));
+        } else {
+          finish(30);
+        }
+      }, 2500);
+
+      video.requestVideoFrameCallback(countFrame);
+      video.play().catch(() => {
+        clearTimeout(timeout);
+        finish(30);
+      });
+    });
+
+    video.load();
+  });
+}
+
+function resolutionLabel(width: number, height: number): string {
+  const long = Math.max(width, height); // handle portrait video
+  if (long >= 3840) return '4K';
+  if (long >= 1920) return '1080p';
+  if (long >= 1280) return '720p';
+  if (long >= 854)  return '480p';
+  return `${Math.min(width, height)}p`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ─── Tempo calculation with uncertainty range ─────────────────────────────────
+// Each phase boundary has ±0.5 × sampleInterval uncertainty.
+// backswingTime = top - address  → ±1 × sampleInterval total
+// downswingTime = impact - top   → ±1 × sampleInterval total
+function calculateTempo(phases: DetectedPhases): TempoResult {
+  const si            = phases.sampleInterval;
+  const backswingTime = phases.top.time    - phases.address.time;
+  const downswingTime = phases.impact.time - phases.top.time;
+
+  const bsLow  = Math.max(0.05, backswingTime - si);
+  const bsHigh = backswingTime + si;
+  const dsLow  = Math.max(0.05, downswingTime - si);
+  const dsHigh = downswingTime + si;
+
+  return {
+    backswingTime,
+    downswingTime,
+    ratioMid:  backswingTime / Math.max(0.05, downswingTime),
+    ratioLow:  bsLow  / dsHigh,
+    ratioHigh: bsHigh / dsLow,
+  };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function VideoAnalyzer() {
-  const [videoFile, setVideoFile]   = useState<File | null>(null);
-  const [videoUrl, setVideoUrl]     = useState<string>('');
-  const [analyzing, setAnalyzing]   = useState(false);
-  const [result, setResult]         = useState<AnalysisResult | null>(null);
+  const [videoFile, setVideoFile]     = useState<File | null>(null);
+  const [videoUrl, setVideoUrl]       = useState<string>('');
+  const [videoMeta, setVideoMeta]     = useState<VideoMeta | null>(null);
+  const [analyzing, setAnalyzing]     = useState(false);
+  const [result, setResult]           = useState<AnalysisResult | null>(null);
+  const [tempoResult, setTempoResult] = useState<TempoResult | null>(null);
   const [currentPhase, setCurrentPhase] = useState<string>('');
   const videoRef  = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setVideoFile(file);
-      setVideoUrl(URL.createObjectURL(file));
-      setResult(null);
-      setCurrentPhase('');
-    }
+    if (!file) return;
+    setVideoFile(file);
+    setVideoUrl(URL.createObjectURL(file));
+    setResult(null);
+    setTempoResult(null);
+    setVideoMeta(null);
+    setCurrentPhase('');
+    // Detect FPS and resolution silently in the background
+    detectVideoMeta(file).then(setVideoMeta);
   };
 
   const speakResult = (res: AnalysisResult) => {
@@ -55,6 +192,7 @@ export default function VideoAnalyzer() {
     if (!videoRef.current || !canvasRef.current) return;
     setAnalyzing(true);
     setResult(null);
+    setTempoResult(null);
 
     try {
       setCurrentPhase('Loading pose detection model...');
@@ -64,8 +202,6 @@ export default function VideoAnalyzer() {
       await tf.ready();
 
       const poseDetection = await import('@tensorflow-models/pose-detection');
-      // Lightning: ~15ms/frame on modern hardware — fast enough for the web prototype.
-      // Switch to Thunder for higher accuracy if needed (costs ~5× more time per frame).
       const detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
@@ -79,7 +215,7 @@ export default function VideoAnalyzer() {
       );
 
       if (!phases) {
-        setCurrentPhase('Could not detect swing. Ensure the full body is visible with good lighting.');
+        setCurrentPhase('Could not detect swing. Ensure full body is visible with good lighting.');
         setAnalyzing(false);
         return;
       }
@@ -90,7 +226,10 @@ export default function VideoAnalyzer() {
       const frameWidth  = canvasRef.current.width;
       const frameHeight = canvasRef.current.height;
       const analysisResult = calculateFaults(phases, frameWidth, frameHeight);
+      const tempo          = calculateTempo(phases);
+
       setResult(analysisResult);
+      setTempoResult(tempo);
       setCurrentPhase('');
       speakResult(analysisResult);
 
@@ -110,10 +249,6 @@ export default function VideoAnalyzer() {
     setAnalyzing(false);
   };
 
-  // Draw the impact frame pose on canvas — confidence-gated per SRD:
-  // green dot  = score >= 0.7 (trusted)
-  // yellow dot = score 0.5–0.7 (low confidence, shown but excluded from faults)
-  // hidden     = score < 0.5
   const drawImpactFrame = (pose: any) => {
     const canvas = canvasRef.current;
     const video  = videoRef.current;
@@ -123,7 +258,7 @@ export default function VideoAnalyzer() {
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const keypoints = pose.keypoints;
+    const keypoints   = pose.keypoints;
     const connections = [
       [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
       [5, 11], [6, 12], [11, 12], [11, 13], [13, 15],
@@ -131,7 +266,7 @@ export default function VideoAnalyzer() {
     ];
 
     ctx.strokeStyle = '#58a6ff';
-    ctx.lineWidth = 2;
+    ctx.lineWidth   = 2;
     connections.forEach(([a, b]) => {
       const kpA = keypoints[a];
       const kpB = keypoints[b];
@@ -148,106 +283,89 @@ export default function VideoAnalyzer() {
       if (score >= CONFIDENCE_TRUST) {
         ctx.beginPath();
         ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-        ctx.fillStyle = '#3fb950'; // green — trusted
+        ctx.fillStyle = '#3fb950';
         ctx.fill();
       } else if (score >= CONFIDENCE_LOW) {
         ctx.beginPath();
         ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-        ctx.fillStyle = '#8b949e'; // gray — low confidence
+        ctx.fillStyle = '#8b949e';
         ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 8px sans-serif';
-        ctx.textAlign = 'center';
+        ctx.fillStyle   = '#ffffff';
+        ctx.font        = 'bold 8px sans-serif';
+        ctx.textAlign   = 'center';
         ctx.fillText('?', kp.x, kp.y + 3);
       }
-      // score < CONFIDENCE_LOW: render nothing
     });
   };
 
   const calculateFaults = (
     phases:      DetectedPhases,
     frameWidth:  number,
-    frameHeight: number
+    frameHeight: number,
   ): AnalysisResult => {
     const faults: Fault[] = [];
     let score = 100;
     const { address, top, impact } = phases;
-
-    // Only include a joint in fault calculation if confidence >= CONFIDENCE_TRUST (0.7)
     const trusted = (kp: any) => (kp.score ?? 0) >= CONFIDENCE_TRUST;
 
-    // ── Shoulder Tilt at Address (Phase 0) ───────────────────────────────────
+    // Shoulder Tilt at Address (Phase 0)
     const addrLS = address.pose.keypoints[5];
     const addrRS = address.pose.keypoints[6];
     if (trusted(addrLS) && trusted(addrRS)) {
-      const tilt = Math.abs(addrLS.y - addrRS.y) / frameHeight;
-      if (tilt > 0.08) {
+      if (Math.abs(addrLS.y - addrRS.y) / frameHeight > 0.08) {
         faults.push({
-          name: 'Shoulder Tilt at Address',
-          phase: 'Address',
+          name: 'Shoulder Tilt at Address', phase: 'Address', severity: 'yellow',
           description: 'Your shoulders are not level at address.',
           drill: 'Place a club across your shoulders and set up in front of a mirror. Practice until the club sits parallel to the ground.',
-          severity: 'yellow',
         });
         score -= 15;
       }
     }
 
-    // ── Reverse Pivot (Phase 2 — Top) ────────────────────────────────────────
+    // Reverse Pivot (Phase 2 — Top)
     const addrLS2 = address.pose.keypoints[5];
     const topLS   = top.pose.keypoints[5];
     if (trusted(addrLS2) && trusted(topLS)) {
-      const shoulderShift = (topLS.x - addrLS2.x) / frameWidth;
-      if (shoulderShift > 0.08) {
+      if ((topLS.x - addrLS2.x) / frameWidth > 0.08) {
         faults.push({
-          name: 'Reverse Pivot',
-          phase: 'Top',
+          name: 'Reverse Pivot', phase: 'Top', severity: 'red',
           description: 'Your weight is shifting toward the target on the backswing.',
           drill: 'Stand with your back against a wall. Your trail hip should graze the wall on the backswing — not your lead hip.',
-          severity: 'red',
         });
         score -= 20;
       }
     }
 
-    // ── Head Up at Impact (Phase 3) ──────────────────────────────────────────
+    // Head Up at Impact (Phase 3)
     const addrNose = address.pose.keypoints[0];
     const impNose  = impact.pose.keypoints[0];
     if (trusted(addrNose) && trusted(impNose)) {
-      const headRise = (addrNose.y - impNose.y) / frameHeight;
-      if (headRise > 0.06) {
+      if ((addrNose.y - impNose.y) / frameHeight > 0.06) {
         faults.push({
-          name: 'Head Up at Impact',
-          phase: 'Impact',
+          name: 'Head Up at Impact', phase: 'Impact', severity: 'red',
           description: 'Your head is rising before impact — you are coming out of the shot.',
           drill: 'Focus on the back of the ball until after impact. Put a tee in the ground and try to see it after the swing.',
-          severity: 'red',
         });
         score -= 20;
       }
     }
 
-    // ── Early Extension (Phase 3 — Impact) ───────────────────────────────────
+    // Early Extension (Phase 3 — Impact)
     const addrLH = address.pose.keypoints[11];
     const impLH  = impact.pose.keypoints[11];
     if (trusted(addrLH) && trusted(impLH)) {
-      const hipThrust = Math.abs(addrLH.x - impLH.x) / frameWidth;
-      if (hipThrust > 0.1) {
+      if (Math.abs(addrLH.x - impLH.x) / frameWidth > 0.1) {
         faults.push({
-          name: 'Early Extension',
-          phase: 'Impact',
+          name: 'Early Extension', phase: 'Impact', severity: 'red',
           description: 'Your hips are thrusting toward the ball through impact.',
           drill: 'Place a headcover behind your trail heel at address. Keep your hips back and rotate around your spine through impact.',
-          severity: 'red',
         });
         score -= 20;
       }
     }
 
-    // Chronological triage — report top 2 faults by phase order (fix root cause first)
     const phaseOrder = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
     faults.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
-
     return {
       score:  Math.max(0, score),
       faults: faults.slice(0, 2),
@@ -262,7 +380,21 @@ export default function VideoAnalyzer() {
           <input type="file" accept="video/*" onChange={handleFileUpload} />
           <div className="upload-box">
             {videoFile ? (
-              <span>✅ {videoFile.name}</span>
+              <div className="upload-file-info">
+                <span>✅ {videoFile.name}</span>
+                {videoMeta ? (
+                  <span className="video-meta">
+                    {resolutionLabel(videoMeta.width, videoMeta.height)}
+                    {' · '}{videoMeta.fps}fps
+                    {' · '}{formatDuration(videoMeta.duration)}
+                    {videoMeta.fpsTier === 'low' && (
+                      <span className="meta-nudge"> · ⚠ Use slo-mo for precise tempo</span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="video-meta">Detecting...</span>
+                )}
+              </div>
             ) : (
               <>
                 <span className="upload-icon">📹</span>
@@ -274,11 +406,7 @@ export default function VideoAnalyzer() {
         </label>
 
         {videoUrl && (
-          <button
-            className="analyze-btn"
-            onClick={analyzeSwing}
-            disabled={analyzing}
-          >
+          <button className="analyze-btn" onClick={analyzeSwing} disabled={analyzing}>
             {analyzing ? '🔄 Analyzing...' : '⚡ Analyze Swing'}
           </button>
         )}
@@ -286,13 +414,7 @@ export default function VideoAnalyzer() {
 
       {videoUrl && (
         <div className="video-section">
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            controls
-            className="video-player"
-            crossOrigin="anonymous"
-          />
+          <video ref={videoRef} src={videoUrl} controls className="video-player" crossOrigin="anonymous" />
           <canvas ref={canvasRef} className="pose-canvas" />
         </div>
       )}
@@ -342,6 +464,18 @@ export default function VideoAnalyzer() {
                 </div>
               ))}
             </div>
+          )}
+
+          {tempoResult && videoMeta && (
+            <TempoChart
+              ratioLow={tempoResult.ratioLow}
+              ratioHigh={tempoResult.ratioHigh}
+              ratioMid={tempoResult.ratioMid}
+              backswingTime={tempoResult.backswingTime}
+              downswingTime={tempoResult.downswingTime}
+              fps={videoMeta.fps}
+              fpsTier={videoMeta.fpsTier}
+            />
           )}
 
           <button className="speak-btn" onClick={() => speakResult(result)}>
