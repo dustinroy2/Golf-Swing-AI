@@ -25,9 +25,12 @@ interface Fault {
 }
 
 interface AnalysisResult {
-  score: number;
-  faults: Fault[];
-  phases: string[];
+  score:          number;
+  faults:         Fault[];
+  phases:         string[];
+  skippedChecks:  string[];
+  assessedCount:  number; // checks that had trusted joints and actually ran
+  totalChecks:    number; // always 4 — used to detect score inflation from bad video
 }
 
 interface TempoResult {
@@ -235,9 +238,11 @@ export default function VideoAnalyzer() {
 
       const history = JSON.parse(localStorage.getItem('swingHistory') || '[]');
       history.unshift({
-        date:   new Date().toISOString(),
-        score:  analysisResult.score,
-        faults: analysisResult.faults.map(f => f.name),
+        date:          new Date().toISOString(),
+        score:         analysisResult.score,
+        faults:        analysisResult.faults.map(f => f.name),
+        assessedCount: analysisResult.assessedCount,
+        totalChecks:   analysisResult.totalChecks,
       });
       localStorage.setItem('swingHistory', JSON.stringify(history.slice(0, 50)));
 
@@ -303,29 +308,51 @@ export default function VideoAnalyzer() {
     frameWidth:  number,
     frameHeight: number,
   ): AnalysisResult => {
-    const faults: Fault[] = [];
-    let score = 100;
+    const faults: Fault[]         = [];
+    const skippedChecks: string[] = [];
+    const TOTAL_CHECKS = 4;
+    let score         = 100;
+    let assessedCount = 0;
     const { address, top, impact } = phases;
     const trusted = (kp: any) => (kp.score ?? 0) >= CONFIDENCE_TRUST;
+    const visible = (kp: any) => (kp.score ?? 0) >= CONFIDENCE_LOW;
 
-    // Shoulder Tilt at Address (Phase 0)
+    // Helper: consistent three-tier skip message for any check
+    const skipMessage = (
+      joints:       any[],
+      unclearMsg:   string,
+      notVisibleMsg: string,
+    ) => {
+      if (joints.some(visible)) skippedChecks.push(unclearMsg);
+      else                      skippedChecks.push(notVisibleMsg);
+    };
+
+    // ── Shoulder Tilt at Address (Phase 0) ───────────────────────────────────
     const addrLS = address.pose.keypoints[5];
     const addrRS = address.pose.keypoints[6];
     if (trusted(addrLS) && trusted(addrRS)) {
+      assessedCount++;
       if (Math.abs(addrLS.y - addrRS.y) / frameHeight > 0.08) {
         faults.push({
           name: 'Shoulder Tilt at Address', phase: 'Address', severity: 'yellow',
           description: 'Your shoulders are not level at address.',
-          drill: 'Place a club across your shoulders and set up in front of a mirror. Practice until the club sits parallel to the ground.',
+          drill: 'Place a club across your shoulders in front of a mirror. Practice until the club sits parallel to the ground.',
         });
         score -= 15;
       }
+    } else {
+      skipMessage(
+        [addrLS, addrRS],
+        'Shoulder alignment at address unclear — try better lighting',
+        'Shoulders not visible at address — adjust camera to show full upper body',
+      );
     }
 
-    // Reverse Pivot (Phase 2 — Top)
+    // ── Reverse Pivot (Phase 2 — Top) ────────────────────────────────────────
     const addrLS2 = address.pose.keypoints[5];
     const topLS   = top.pose.keypoints[5];
     if (trusted(addrLS2) && trusted(topLS)) {
+      assessedCount++;
       if ((topLS.x - addrLS2.x) / frameWidth > 0.08) {
         faults.push({
           name: 'Reverse Pivot', phase: 'Top', severity: 'red',
@@ -334,12 +361,19 @@ export default function VideoAnalyzer() {
         });
         score -= 20;
       }
+    } else {
+      skipMessage(
+        [addrLS2, topLS],
+        'Shoulder position unclear at top — try better lighting or move camera further back',
+        'Shoulders not visible at top of backswing — ensure full upper body is in frame',
+      );
     }
 
-    // Head Up at Impact (Phase 3)
+    // ── Head Up at Impact (Phase 3) ───────────────────────────────────────────
     const addrNose = address.pose.keypoints[0];
     const impNose  = impact.pose.keypoints[0];
     if (trusted(addrNose) && trusted(impNose)) {
+      assessedCount++;
       if ((addrNose.y - impNose.y) / frameHeight > 0.06) {
         faults.push({
           name: 'Head Up at Impact', phase: 'Impact', severity: 'red',
@@ -348,12 +382,19 @@ export default function VideoAnalyzer() {
         });
         score -= 20;
       }
+    } else {
+      skipMessage(
+        [addrNose, impNose],
+        'Head position unclear at impact — ensure face is visible and lighting is adequate',
+        'Head not visible — make sure your face is not cut off by the camera frame',
+      );
     }
 
-    // Early Extension (Phase 3 — Impact)
+    // ── Early Extension (Phase 3 — Impact) ───────────────────────────────────
     const addrLH = address.pose.keypoints[11];
     const impLH  = impact.pose.keypoints[11];
     if (trusted(addrLH) && trusted(impLH)) {
+      assessedCount++;
       if (Math.abs(addrLH.x - impLH.x) / frameWidth > 0.1) {
         faults.push({
           name: 'Early Extension', phase: 'Impact', severity: 'red',
@@ -362,14 +403,23 @@ export default function VideoAnalyzer() {
         });
         score -= 20;
       }
+    } else {
+      skipMessage(
+        [addrLH, impLH],
+        'Hip position unclear at impact — try filming from directly down the line',
+        'Hips not visible — ensure full body from head to knees is in frame',
+      );
     }
 
     const phaseOrder = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
     faults.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
     return {
-      score:  Math.max(0, score),
-      faults: faults.slice(0, 2),
-      phases: ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'],
+      score:         Math.max(0, score),
+      faults:        faults.slice(0, 2),
+      phases:        ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'],
+      skippedChecks,
+      assessedCount,
+      totalChecks:   TOTAL_CHECKS,
     };
   };
 
@@ -441,13 +491,42 @@ export default function VideoAnalyzer() {
               {result.score}
             </div>
             <div className="score-label">Swing Score</div>
+            <div className="score-coverage" style={{
+              color: result.assessedCount === result.totalChecks ? '#8b949e'
+                   : result.assessedCount >= 2               ? '#d29922'
+                   : '#f85149'
+            }}>
+              {result.assessedCount}/{result.totalChecks} checks assessed
+            </div>
           </div>
 
+          {result.skippedChecks.length > 0 && (
+            <div className="skipped-checks">
+              <h3>Could Not Assess</h3>
+              {result.skippedChecks.map((msg, i) => (
+                <div key={i} className="skipped-row">
+                  <span className="skipped-dot" />
+                  {msg}
+                </div>
+              ))}
+            </div>
+          )}
+
           {result.faults.length === 0 ? (
-            <div className="no-faults">✅ Great swing! No major faults detected.</div>
+            <div className="no-faults">✅ {result.assessedCount === result.totalChecks
+              ? 'Great swing! No major faults detected.'
+              : 'No faults detected in assessed checks.'
+            }</div>
           ) : (
             <div className="faults-list">
-              <h3>Top Faults Found</h3>
+              <h3>
+                {result.faults.length} fault{result.faults.length > 1 ? 's' : ''} found
+                {result.skippedChecks.length > 0 && (
+                  <span className="faults-subtext">
+                    {' · '}{result.skippedChecks.length} check{result.skippedChecks.length > 1 ? 's' : ''} skipped
+                  </span>
+                )}
+              </h3>
               {result.faults.map((fault, i) => (
                 <div key={i} className={`fault-card fault-${fault.severity}`}>
                   <div className="fault-header">

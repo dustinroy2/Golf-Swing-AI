@@ -1998,3 +1998,84 @@ body {
   font-size: 11px;
   opacity: 0.9;
 }
+
+/* ── Confidence gating — skipped checks ─────────────────────── */
+.skipped-checks {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+
+.skipped-checks h3 {
+  font-size: 13px;
+  color: #8b949e;
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.skipped-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+  padding: 4px 0;
+}
+
+.skipped-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8b949e;
+  flex-shrink: 0;
+}
+
+/* ── Score trend chart ───────────────────────────────────────── */
+.trend-chart {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 16px 0;
+}
+
+.trend-title {
+  font-size: 12px;
+  color: #8b949e;
+  margin-bottom: 8px;
+}
+
+.trend-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Score card coverage line ────────────────────────────────── */
+.score-coverage {
+  font-size: 11px;
+  margin-top: 4px;
+  font-family: monospace;
+}
+
+/* ── Fault list subtext ──────────────────────────────────────── */
+.faults-subtext {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8b949e;
+}
+
+/* ── Partial session badge in history ────────────────────────── */
+.partial-badge {
+  font-size: 10px;
+  font-weight: 500;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-left: 6px;
+  font-family: monospace;
+  vertical-align: middle;
+}
