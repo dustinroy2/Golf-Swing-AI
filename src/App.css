@@ -1,5 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&display=swap');
+
 :root {
   --bg-base:           #0d1117;
+  /* v3 semantic colors */
+  --v3-bad:            #e84040;
+  --v3-bad-dim:        rgba(232,64,64,0.10);
+  --v3-bad-border:     rgba(232,64,64,0.22);
+  --v3-good:           #2fbd56;
+  --v3-good-dim:       rgba(47,189,86,0.08);
+  --v3-good-border:    rgba(47,189,86,0.18);
+  --v3-accent:         #6cb4ff;
+  --v3-accent-dim:     rgba(108,180,255,0.08);
+  --v3-gold:           #d4a853;
+  --v3-gold-dim:       rgba(212,168,83,0.10);
+  --v3-bg:             #0b0e0b;
+  --v3-surface:        #131813;
+  --v3-card:           #1a1f1a;
+  --v3-border:         #2a332a;
   --bg-surface-1:      #161b22;
   --bg-surface-2:      #1c2128;
   --bg-surface-3:      #21262d;
@@ -2899,4 +2916,26 @@ body {
   font-weight: 600;
   text-align: center;
   margin-top: 8px;
+}
+
+/* ── v3 Screen Container ─────────────────────────────────────────────────── */
+.v3-screen-container {
+  margin: -24px -24px 0;         /* undo app-main padding on sides + top */
+  min-height: calc(100vh - 57px - 57px); /* full height minus header & bottom nav */
+  display: flex;
+  flex-direction: column;
+  background: #0b0e0b;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Keyframe used by result badge fade-in on replay screen */
+@keyframes v3FadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Hide scrollbars on swipeable cause chain */
+.v3-screen-container *::-webkit-scrollbar {
+  display: none;
 }

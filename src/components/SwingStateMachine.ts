@@ -31,7 +31,7 @@ export interface DetectedPhases {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
+export async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
   return new Promise<void>(resolve => {
     if (Math.abs(video.currentTime - time) < 0.001) { resolve(); return; }
     const timeout = setTimeout(resolve, 500); // fallback if seeked never fires

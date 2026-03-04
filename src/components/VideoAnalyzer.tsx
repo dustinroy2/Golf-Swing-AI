@@ -1,16 +1,14 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   detectSwingPhases,
   DetectedPhases,
   SwingFrame,
   CONFIDENCE_TRUST,
   CONFIDENCE_LOW,
+  seekTo,
 } from './SwingStateMachine';
-import TempoChart from './TempoChart';
-import OverlayCanvas, { AnalysisMode } from './OverlayCanvas';
-import PhaseSelector from './PhaseSelector';
 import DualVideoView, { SwingViewData } from './DualVideoView';
-import PhaseResultCard from './PhaseResultCard';
+import OverlayCanvas from './OverlayCanvas';
 import {
   buildSwingArc,
   computeReferencePlane,
@@ -20,6 +18,12 @@ import {
   SwingPathResult,
 } from '../utils/swingPlaneCalculator';
 import { extractAngles, ExtractedAngles } from '../utils/angleExtractor';
+import SwingReplayScreen from './SwingReplayScreen';
+import DiagnosisScreen from './DiagnosisScreen';
+import CauseChainScreen from './CauseChainScreen';
+import FixScreen from './FixScreen';
+
+type V3Screen = 'replay' | 'diagnosis' | 'chain' | 'fix';
 
 declare global {
   interface HTMLVideoElement {
@@ -40,6 +44,13 @@ interface Fault {
   shotShapes: ShotShape[];  // shot outcomes caused by this fault
 }
 
+export interface ScorecardRow {
+  name:   string;
+  phase:  string;
+  status: 'good' | 'bad';
+  note:   string;
+}
+
 interface AnalysisResult {
   score:              number;
   faults:             Fault[];
@@ -49,6 +60,7 @@ interface AnalysisResult {
   assessedCount:      number;
   totalChecks:        number;
   shankRisk:          boolean;   // true when multiple impact faults suggest shank territory
+  scorecardRows:      ScorecardRow[]; // full pass/fail list for Fix Screen
 }
 
 interface TempoResult {
@@ -66,9 +78,6 @@ interface VideoMeta {
   height:   number;
   duration: number;
 }
-
-const PHASE_ORDER = ['address', 'takeaway', 'top', 'impact', 'followThrough'] as const;
-const PHASE_NAMES = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
 
 // ─── Utility functions ────────────────────────────────────────────────────────
 
@@ -156,14 +165,15 @@ function calculateFaults(
   frameHeight: number,
   angle:       'dtl' | 'faceOn',
 ): AnalysisResult {
-  const faults: Fault[]           = [];
-  const skippedChecks: string[]   = [];
+  const faults: Fault[]              = [];
+  const skippedChecks: string[]      = [];
   const assessedCheckNames: string[] = [];
+  const scorecardRows: ScorecardRow[]= [];
   const TOTAL_CHECKS = 3;
   let score = 100;
   const { address, top, impact } = phases;
   const trusted = (kp: any) => (kp?.score ?? 0) >= CONFIDENCE_TRUST;
-  const visible = (kp: any) => (kp?.score ?? 0) >= CONFIDENCE_LOW;
+  const visible  = (kp: any) => (kp?.score ?? 0) >= CONFIDENCE_LOW;
 
   const skip = (joints: any[], unclearMsg: string, notVisMsg: string) => {
     skippedChecks.push(joints.some(visible) ? unclearMsg : notVisMsg);
@@ -176,12 +186,15 @@ function calculateFaults(
     assessedCheckNames.push('Shoulder Tilt');
     if (Math.abs(addrLS.y - addrRS.y) / frameHeight > 0.08) {
       faults.push({
-        name: 'Shoulder Tilt at Address', phase: 'Address', severity: 'yellow',
+        name: 'Shoulder Tilt at Address', phase: 'Setup', severity: 'yellow',
         description: 'Your shoulders are not level at address. This pre-sets a compensating move through the swing.',
         drill: 'Place a club across your shoulders in front of a mirror. Practice until the club sits parallel to the ground.',
         shotShapes: ['push', 'pull'],
       });
+      scorecardRows.push({ name: 'Shoulder Alignment', phase: 'Setup', status: 'bad', note: 'Not level at address' });
       score -= 15;
+    } else {
+      scorecardRows.push({ name: 'Shoulder Alignment', phase: 'Setup', status: 'good', note: 'Level and square' });
     }
   } else {
     skip([addrLS, addrRS],
@@ -197,12 +210,15 @@ function calculateFaults(
       assessedCheckNames.push('Weight Shift');
       if ((topLS.x - addrLS2.x) / frameWidth > 0.08) {
         faults.push({
-          name: 'Reverse Pivot', phase: 'Top', severity: 'red',
+          name: 'Reverse Pivot', phase: 'Top of Backswing', severity: 'red',
           description: 'Your weight is shifting toward the target on the backswing. This causes you to fall back through impact, robbing power and direction.',
           drill: 'Stand with your back against a wall. Feel your trail hip graze the wall on the backswing — pressure should load into your trail foot.',
           shotShapes: ['slice', 'push', 'topped'],
         });
+        scorecardRows.push({ name: 'Weight Transfer', phase: 'Top of Backswing', status: 'bad', note: 'Reverse pivot detected' });
         score -= 20;
+      } else {
+        scorecardRows.push({ name: 'Weight Transfer', phase: 'Top of Backswing', status: 'good', note: 'Weight loads into trail foot' });
       }
     } else {
       skip([addrLS2, topLS],
@@ -218,12 +234,15 @@ function calculateFaults(
     assessedCheckNames.push('Head Position');
     if ((addrNose.y - impNose.y) / frameHeight > 0.06) {
       faults.push({
-        name: 'Head Up at Impact', phase: 'Impact', severity: 'red',
+        name: 'Head Up at Impact', phase: 'Moment of Impact', severity: 'red',
         description: 'Your head is rising before impact — you\'re coming out of the shot early. The club face opens and the path goes off-plane at the worst possible moment.',
         drill: 'Place a tee in the ground at the ball position. Keep your eyes on that tee until you hear the club pass through. "Watch the tee disappear."',
         shotShapes: ['thin', 'shank', 'slice'],
       });
+      scorecardRows.push({ name: 'Head Position', phase: 'Moment of Impact', status: 'bad', note: 'Rose before contact' });
       score -= 20;
+    } else {
+      scorecardRows.push({ name: 'Head Position', phase: 'Moment of Impact', status: 'good', note: 'Stayed level through impact' });
     }
   } else {
     skip([addrNose, impNose],
@@ -239,12 +258,15 @@ function calculateFaults(
       assessedCheckNames.push('Hip Stability');
       if (Math.abs(addrLH.x - impLH.x) / frameWidth > 0.1) {
         faults.push({
-          name: 'Early Extension', phase: 'Impact', severity: 'red',
+          name: 'Early Extension', phase: 'Moment of Impact', severity: 'red',
           description: 'Your hips are thrusting toward the ball through impact. The club is forced off-plane and the hosel leads the face — the most common cause of shanks.',
           drill: 'Set up with your trail glute touching a wall. Maintain that contact through impact. Your hips rotate, they don\'t lunge forward.',
           shotShapes: ['shank', 'chunk', 'thin'],
         });
+        scorecardRows.push({ name: 'Hip Position', phase: 'Moment of Impact', status: 'bad', note: 'Early extension — hips lunging forward' });
         score -= 20;
+      } else {
+        scorecardRows.push({ name: 'Hip Position', phase: 'Moment of Impact', status: 'good', note: 'Hips stayed back through impact' });
       }
     } else {
       skip([addrLH, impLH],
@@ -253,7 +275,7 @@ function calculateFaults(
     }
   }
 
-  const phaseOrder = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
+  const phaseOrder = ['Setup', 'Takeaway', 'Top of Backswing', 'Moment of Impact', 'Follow-Through'];
   faults.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
 
   // Shank risk: any fault that lists 'shank' as a shot shape
@@ -268,6 +290,7 @@ function calculateFaults(
     assessedCount:      assessedCheckNames.length,
     totalChecks:        TOTAL_CHECKS,
     shankRisk,
+    scorecardRows,
   };
 }
 
@@ -323,24 +346,28 @@ export default function VideoAnalyzer() {
   const [allFrames, setAllFrames]       = useState<SwingFrame[]>([]);
   const [detectedPhases, setDetectedPhases] = useState<DetectedPhases | null>(null);
 
-  // Walkthrough
-  const [walkthroughStep, setWalkthroughStep] = useState(0);
-  // 0 = pre-analysis, 1-5 = guided step, 6 = free play
+  // v3 Screen state (null = pre-analysis)
+  const [screen, setScreen]           = useState<V3Screen | null>(null);
+  const [phaseImages, setPhaseImages] = useState<Record<string, string>>({});
+  const [speaking, setSpeaking]       = useState(false);
 
-  // Analysis mode
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('critique');
-
-  // Swing path data
+  // Swing path data (computed for history/future use, not displayed in v3 screens)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [swingArc, setSwingArc]               = useState<ArcPoint[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [referencePlane, setReferencePlane]   = useState<ReferencePlane | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [swingPathResult, setSwingPathResult] = useState<SwingPathResult | null>(null);
 
-  // Angles per phase
+  // Angles per phase (computed for history/future use)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [phaseAngles, setPhaseAngles] = useState<Record<string, ExtractedAngles>>({});
 
   // Secondary video
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [view2File, setView2File]     = useState<File | null>(null);
   const [view2Url, setView2Url]       = useState('');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [view2Meta, setView2Meta]     = useState<VideoMeta | null>(null);
   const [analyzing2, setAnalyzing2]   = useState(false);
   const [result2, setResult2]         = useState<AnalysisResult | null>(null);
@@ -353,52 +380,17 @@ export default function VideoAnalyzer() {
   const video2Ref  = useRef<HTMLVideoElement>(null);
   const canvas2Ref = useRef<HTMLCanvasElement>(null);
 
-  // Active phase name derived from walkthrough step
-  const activePhase = walkthroughStep >= 1 && walkthroughStep <= 5
-    ? PHASE_NAMES[walkthroughStep - 1]
-    : '';
-
-  // Angles for the active phase
-  const activeAngles = phaseAngles[activePhase] ?? null;
-
-  // ── Walkthrough navigation ─────────────────────────────────────────────────
-  const seekToPhase = (step: number) => {
-    if (!detectedPhases || !videoRef.current) return;
-    const phaseKey = PHASE_ORDER[step - 1];
-    const time     = detectedPhases[phaseKey].time;
-    videoRef.current.currentTime = time;
-    videoRef.current.pause();
-  };
-
-  const handleNext = () => {
-    if (walkthroughStep < 5) {
-      const next = walkthroughStep + 1;
-      setWalkthroughStep(next);
-      seekToPhase(next);
-    } else {
-      setWalkthroughStep(6); // free play
-    }
-  };
-
-  const handlePrev = () => {
-    if (walkthroughStep > 1) {
-      const prev = walkthroughStep - 1;
-      setWalkthroughStep(prev);
-      seekToPhase(prev);
-    }
-  };
-
   // ── Angle selection ────────────────────────────────────────────────────────
   const handleAngleChange = (angle: 'dtl' | 'faceOn') => {
     setSwingAngle(angle);
     localStorage.setItem('swingType', angle);
-    // Reset analysis if a video is already loaded
     if (videoUrl) {
       setResult(null);
       setTempoResult(null);
       setAllFrames([]);
       setDetectedPhases(null);
-      setWalkthroughStep(0);
+      setScreen(null);
+      setPhaseImages({});
       setSwingArc([]);
       setReferencePlane(null);
       setSwingPathResult(null);
@@ -418,7 +410,8 @@ export default function VideoAnalyzer() {
     setProgressMsg('');
     setAllFrames([]);
     setDetectedPhases(null);
-    setWalkthroughStep(0);
+    setScreen(null);
+    setPhaseImages({});
     setSwingArc([]);
     setReferencePlane(null);
     setSwingPathResult(null);
@@ -430,19 +423,13 @@ export default function VideoAnalyzer() {
   const handleReset = () => {
     setVideoFile(null); setVideoUrl(''); setVideoMeta(null);
     setResult(null); setTempoResult(null); setProgressMsg('');
-    setAllFrames([]); setDetectedPhases(null); setWalkthroughStep(0);
+    setAllFrames([]); setDetectedPhases(null);
+    setScreen(null); setPhaseImages({});
     setSwingArc([]); setReferencePlane(null); setSwingPathResult(null);
     setPhaseAngles({});
     setView2File(null); setView2Url(''); setResult2(null); setAllFrames2([]); setPhases2(null);
-  };
-
-  const handleView2Upload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setView2File(file);
-    setView2Url(URL.createObjectURL(file));
-    setResult2(null); setAllFrames2([]); setPhases2(null); setProgressMsg2('');
-    detectVideoMeta(file).then(setView2Meta);
+    window.speechSynthesis?.cancel();
+    setSpeaking(false);
   };
 
   // ── Speech ────────────────────────────────────────────────────────────────
@@ -455,7 +442,39 @@ export default function VideoAnalyzer() {
     }`;
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 0.9;
+    u.onend = () => setSpeaking(false);
     window.speechSynthesis.speak(u);
+    setSpeaking(true);
+  };
+
+  const handleSpeakToggle = () => {
+    if (speaking) {
+      window.speechSynthesis?.cancel();
+      setSpeaking(false);
+    } else if (result) {
+      speakResult(result);
+    }
+  };
+
+  // ── Phase frame capture ────────────────────────────────────────────────────
+  const capturePhaseImages = async (
+    videoEl:  HTMLVideoElement,
+    canvasEl: HTMLCanvasElement,
+    phases:   DetectedPhases,
+  ): Promise<Record<string, string>> => {
+    const ctx = canvasEl.getContext('2d')!;
+    const images: Record<string, string> = {};
+    for (const [key, frame] of [
+      ['address',       phases.address],
+      ['top',           phases.top],
+      ['impact',        phases.impact],
+      ['followThrough', phases.followThrough],
+    ] as [string, SwingFrame][]) {
+      await seekTo(videoEl, frame.time);
+      ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+      images[key] = canvasEl.toDataURL('image/jpeg', 0.75);
+    }
+    return images;
   };
 
   // ── Core analysis engine ──────────────────────────────────────────────────
@@ -496,7 +515,7 @@ export default function VideoAnalyzer() {
     if (!videoRef.current || !canvasRef.current) return;
     setAnalyzing(true);
     setResult(null); setTempoResult(null); setAllFrames([]); setDetectedPhases(null);
-    setWalkthroughStep(0); setSwingArc([]); setReferencePlane(null);
+    setScreen(null); setPhaseImages({}); setSwingArc([]); setReferencePlane(null);
 
     try {
       const out = await runAnalysis(videoRef.current, canvasRef.current, setProgressMsg, swingAngle);
@@ -566,16 +585,14 @@ export default function VideoAnalyzer() {
       });
       localStorage.setItem('swingHistory', JSON.stringify(history.slice(0, 50)));
 
-      speakResult(out.result);
+      // Capture phase frame images for AnnotatedVideoFrame
+      const imgs = await capturePhaseImages(
+        videoRef.current!, canvasRef.current!, out.phases,
+      );
+      setPhaseImages(imgs);
 
-      // Start walkthrough at step 1
-      setWalkthroughStep(1);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.currentTime = out.phases.address.time;
-          videoRef.current.pause();
-        }
-      }, 100);
+      // Launch v3 replay screen
+      setScreen('replay');
 
     } catch (err) {
       console.error(err);
@@ -610,10 +627,6 @@ export default function VideoAnalyzer() {
   const dualReady = result && result2 && detectedPhases && phases2 && videoUrl && view2Url;
 
   if (dualReady) {
-    const [overlays1, setOverlays1] = [
-      { skeleton: true, pro: false, angles: false, trail: false },
-      () => {},
-    ];
     const view1: SwingViewData = {
       videoUrl, allFrames, phases: detectedPhases!, result: result!, angle: swingAngle, label: 'Swing 1',
     };
@@ -636,13 +649,60 @@ export default function VideoAnalyzer() {
   }
 
   // ── Main render ────────────────────────────────────────────────────────────
-  const inWalkthrough = walkthroughStep >= 1 && walkthroughStep <= 5;
-  const walkthroughDone = walkthroughStep === 6;
+
+  // v3 screen overlay — takes over the full content area after analysis
+  if (screen && result && detectedPhases) {
+    return (
+      <div className="v3-screen-container">
+        {/* Hidden video + canvas kept in DOM so seekTo still works */}
+        <video ref={videoRef} src={videoUrl} playsInline muted
+          style={{ display: 'none' }} crossOrigin="anonymous" />
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+        {screen === 'replay' && (
+          <SwingReplayScreen
+            videoUrl={videoUrl}
+            allFrames={allFrames}
+            detectedPhases={detectedPhases}
+            shankRisk={result.shankRisk}
+            faultCount={result.faults.length}
+            onNavigate={setScreen}
+          />
+        )}
+        {screen === 'diagnosis' && (
+          <DiagnosisScreen
+            result={result}
+            tempoResult={tempoResult}
+            onNavigate={setScreen}
+            speaking={speaking}
+            onSpeakToggle={handleSpeakToggle}
+          />
+        )}
+        {screen === 'chain' && (
+          <CauseChainScreen
+            result={result}
+            phaseImages={phaseImages}
+            detectedPhases={detectedPhases}
+            frameWidth={videoMeta?.width ?? 640}
+            frameHeight={videoMeta?.height ?? 480}
+            onNavigate={setScreen}
+          />
+        )}
+        {screen === 'fix' && (
+          <FixScreen
+            result={result}
+            onNavigate={setScreen}
+            onReset={handleReset}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="analyzer">
 
-      {/* ── Angle chips + score (always at top) ───────────────────────────── */}
+      {/* ── Angle chips (pre-analysis) ─────────────────────────────────────── */}
       <div className="analyzer-topbar">
         <div className="angle-chips">
           <button
@@ -654,26 +714,6 @@ export default function VideoAnalyzer() {
             onClick={() => handleAngleChange('faceOn')}
           >Face-On</button>
         </div>
-
-        {result && (
-          <div className="analyzer-score-chip" style={{ color: scoreColor(result.score) }}>
-            {result.score}
-          </div>
-        )}
-
-        {result && walkthroughDone && (
-          <div className="mode-chips">
-            {(['critique', 'swingPath', 'angles'] as AnalysisMode[]).map(m => (
-              <button
-                key={m}
-                className={`mode-chip${analysisMode === m ? ' active' : ''}`}
-                onClick={() => setAnalysisMode(m)}
-              >
-                {m === 'critique' ? 'Critique' : m === 'swingPath' ? 'Swing Path' : 'Angles'}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* ── Upload area ──────────────────────────────────────────────────── */}
@@ -704,49 +744,18 @@ export default function VideoAnalyzer() {
         </div>
       )}
 
-      {/* ── Video hero ───────────────────────────────────────────────────── */}
+      {/* ── Video hero (pre-analysis only) ───────────────────────────────── */}
       {videoUrl && (
         <div className="video-hero-container">
           <video
             ref={videoRef}
             src={videoUrl}
-            controls={walkthroughDone || !result}
+            controls={!result}
             playsInline
             className="video-hero"
             crossOrigin="anonymous"
           />
-          {allFrames.length > 0 && (
-            <OverlayCanvas
-              videoRef={videoRef}
-              allFrames={allFrames}
-              phaseFrames={detectedPhases}
-              angle={swingAngle}
-              analysisMode={inWalkthrough ? 'critique' : analysisMode}
-              activePhase={activePhase}
-              faults={result?.faults ?? []}
-              assessedChecks={result?.assessedCheckNames ?? []}
-              swingArc={swingArc}
-              referencePlane={referencePlane}
-            />
-          )}
-
-          {/* Phase badge */}
-          {inWalkthrough && (
-            <div className="phase-step-badge">
-              {walkthroughStep} / 5 · {activePhase}
-            </div>
-          )}
-
-          {/* Swing path verdict badge (free play, swing path mode) */}
-          {walkthroughDone && analysisMode === 'swingPath' && swingPathResult && (
-            <div className={`swing-verdict-badge verdict-${swingPathResult.verdict}`}>
-              {swingPathResult.verdict === 'on-plane'  ? '✓ On Plane'       :
-               swingPathResult.verdict === 'over-top'  ? '✗ Over the Top'   :
-                                                         '⚠ Too Flat'}
-            </div>
-          )}
-
-          {/* Change video button (top-right, always visible when video loaded) */}
+          {/* Change video button */}
           {result && (
             <button className="video-change-btn" onClick={handleReset}>✕ New Swing</button>
           )}
@@ -755,11 +764,6 @@ export default function VideoAnalyzer() {
 
       {/* ── Hidden analysis canvas ────────────────────────────────────────── */}
       <canvas ref={canvasRef} className="pose-canvas" style={{ display: 'none' }} />
-
-      {/* ── Phase selector (free play only) ──────────────────────────────── */}
-      {detectedPhases && walkthroughDone && (
-        <PhaseSelector phases={detectedPhases} videoRef={videoRef} />
-      )}
 
       {/* ── Analyze button / progress ─────────────────────────────────────── */}
       {videoUrl && !result && (
@@ -781,77 +785,6 @@ export default function VideoAnalyzer() {
       )}
       {!analyzing && progressMsg && (
         <div className="analyzing-status error"><span>⚠️ {progressMsg}</span></div>
-      )}
-
-      {/* ── Walkthrough phase result card ─────────────────────────────────── */}
-      {inWalkthrough && result && (
-        <PhaseResultCard
-          stepNumber={walkthroughStep}
-          totalSteps={5}
-          phaseName={activePhase}
-          mode="critique"
-          faults={result.faults}
-          skippedChecks={result.skippedChecks}
-          assessedChecks={result.assessedCheckNames}
-          shankRisk={result.shankRisk}
-          onNext={handleNext}
-          onPrev={handlePrev}
-          isFirst={walkthroughStep === 1}
-          isLast={walkthroughStep === 5}
-        />
-      )}
-
-      {/* ── Free play result card (after walkthrough) ─────────────────────── */}
-      {walkthroughDone && result && (
-        <PhaseResultCard
-          stepNumber={0}
-          totalSteps={5}
-          phaseName={activePhase || 'Address'}
-          mode={analysisMode}
-          faults={result.faults}
-          skippedChecks={result.skippedChecks}
-          assessedChecks={result.assessedCheckNames}
-          shankRisk={result.shankRisk}
-          swingPath={swingPathResult ?? undefined}
-          angles={activeAngles ?? undefined}
-          onNext={() => {}}
-          onPrev={() => {}}
-          isFirst={true}
-          isLast={true}
-        />
-      )}
-
-      {/* ── Bottom actions ────────────────────────────────────────────────── */}
-      {result && walkthroughDone && (
-        <div className="result-actions">
-          {tempoResult && videoMeta && (
-            <TempoChart
-              ratioLow={tempoResult.ratioLow}
-              ratioHigh={tempoResult.ratioHigh}
-              ratioMid={tempoResult.ratioMid}
-              backswingTime={tempoResult.backswingTime}
-              downswingTime={tempoResult.downswingTime}
-              fps={videoMeta.fps}
-              fpsTier={videoMeta.fpsTier}
-            />
-          )}
-          <div className="result-btns">
-            <button className="speak-btn" onClick={() => speakResult(result)}>
-              🔊 Read Results
-            </button>
-            {!view2File && (
-              <label className="add-second-video-btn">
-                <input
-                  type="file"
-                  accept="video/mp4,video/quicktime,video/*"
-                  onChange={handleView2Upload}
-                  style={{ display: 'none' }}
-                />
-                ＋ Compare
-              </label>
-            )}
-          </div>
-        </div>
       )}
 
       {/* ── Second video section ─────────────────────────────────────────── */}
