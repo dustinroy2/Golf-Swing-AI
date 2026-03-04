@@ -206,6 +206,12 @@ export default function SwingModel() {
   const [bounds, setBounds] = useState<GolferBounds | null>(null);
   const view = VIEWS[activeView];
 
+  const handleViewChange = (i: number) => {
+    setActiveView(i);
+    if (i === 0) localStorage.setItem('swingType', 'dtl');
+    if (i === 1) localStorage.setItem('swingType', 'faceOn');
+  };
+
   return (
     <div style={{ width: '100%', background: '#0d1117', borderRadius: '12px', overflow: 'hidden' }}>
 
@@ -214,7 +220,7 @@ export default function SwingModel() {
         {VIEWS.map((v, i) => (
           <button
             key={v.label}
-            onClick={() => setActiveView(i)}
+            onClick={() => handleViewChange(i)}
             style={{
               flex: 1, padding: '8px 12px', borderRadius: '8px',
               border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600,

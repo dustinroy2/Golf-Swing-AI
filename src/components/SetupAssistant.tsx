@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
+import CameraPermissionModal from './CameraPermissionModal';
 
 type FramingStatus = 'no-person' | 'too-far' | 'too-close' | 'good';
 
@@ -19,6 +20,7 @@ export default function SetupAssistant({ onBack }: { onBack: () => void }) {
 
   const [started, setStarted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [framing, setFraming] = useState<FramingStatus>('no-person');
   const [footPos, setFootPos] = useState<FootPosition | null>(null);
   const [readyCount, setReadyCount] = useState(0);
@@ -31,17 +33,18 @@ export default function SetupAssistant({ onBack }: { onBack: () => void }) {
     'good':      { color: '#3fb950', text: '✅ Perfect! Hold still...', border: '#3fb950' },
   };
 
+  const pendingStreamRef = useRef<MediaStream | null>(null);
+
   const startAssistant = async () => {
     setLoading(true);
+    setPermissionDenied(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: 1280, height: 720 },
         audio: false,
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-      }
+      streamRef.current = stream;
+      pendingStreamRef.current = stream;
 
       const tf = await import('@tensorflow/tfjs');
       await import('@tensorflow/tfjs-backend-webgl');
@@ -56,13 +59,21 @@ export default function SetupAssistant({ onBack }: { onBack: () => void }) {
 
       setStarted(true);
       setLoading(false);
-      startDetection();
-      startPreviewLoop();
-    } catch (err) {
+    } catch (err: any) {
       setLoading(false);
-      alert('Camera access required. Please allow camera access and try again.');
+      setPermissionDenied(true);
     }
   };
+
+  // Attach stream and start loops after video element mounts
+  useEffect(() => {
+    if (started && videoRef.current && pendingStreamRef.current) {
+      videoRef.current.srcObject = pendingStreamRef.current;
+      pendingStreamRef.current = null;
+      startDetection();
+      startPreviewLoop();
+    }
+  }, [started]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startDetection = () => {
     intervalRef.current = setInterval(async () => {
@@ -152,6 +163,15 @@ export default function SetupAssistant({ onBack }: { onBack: () => void }) {
   useEffect(() => () => stop(), [stop]);
 
   const cfg = statusConfig[framing];
+
+  if (permissionDenied) {
+    return (
+      <CameraPermissionModal
+        onRetry={startAssistant}
+        onDismiss={() => { setPermissionDenied(false); onBack(); }}
+      />
+    );
+  }
 
   return (
     <div className="setup-assistant">

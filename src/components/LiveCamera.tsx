@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
+import CameraPermissionModal from './CameraPermissionModal';
 
 export default function LiveCamera() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -7,27 +8,37 @@ export default function LiveCamera() {
   const [status, setStatus] = useState<'idle' | 'ready' | 'recording' | 'processing'>('idle');
   const [swingsQueued, setSwingsQueued] = useState(0);
   const [framing, setFraming] = useState<'too-far' | 'too-close' | 'good' | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<any>(null);
   const framingIntervalRef = useRef<any>(null);
 
+  const pendingStreamRef = useRef<MediaStream | null>(null);
+
   const startCamera = async () => {
+    setPermissionDenied(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: 1280, height: 720 },
         audio: false,
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        setCameraActive(true);
-        setStatus('ready');
-        startFramingCheck();
-      }
-    } catch (err) {
-      alert('Camera access denied. Please allow camera access and try again.');
+      streamRef.current = stream;
+      pendingStreamRef.current = stream;
+      setCameraActive(true);
+      setStatus('ready');
+    } catch (err: any) {
+      setPermissionDenied(true);
     }
   };
+
+  // Attach stream to video element after it mounts (cameraActive flips to true)
+  useEffect(() => {
+    if (cameraActive && videoRef.current && pendingStreamRef.current) {
+      videoRef.current.srcObject = pendingStreamRef.current;
+      pendingStreamRef.current = null;
+      startFramingCheck();
+    }
+  }, [cameraActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -92,6 +103,15 @@ export default function LiveCamera() {
   };
 
   const msg = framingMessage();
+
+  if (permissionDenied) {
+    return (
+      <CameraPermissionModal
+        onRetry={startCamera}
+        onDismiss={() => setPermissionDenied(false)}
+      />
+    );
+  }
 
   return (
     <div className="live-camera">

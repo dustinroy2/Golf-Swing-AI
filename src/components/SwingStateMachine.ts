@@ -26,6 +26,7 @@ export interface DetectedPhases {
   impact:         SwingFrame;
   followThrough:  SwingFrame;
   sampleInterval: number; // seconds between dense-scan frames — used to calculate timing uncertainty
+  allFrames:      SwingFrame[]; // all ~20 frames from dense pass — used for overlay animation
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -218,5 +219,6 @@ export async function detectSwingPhases(
     impact:         frames[impactIdx],
     followThrough:  frames[followIdx],
     sampleInterval,
+    allFrames:      frames,
   };
 }
