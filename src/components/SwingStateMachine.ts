@@ -4,8 +4,8 @@ export const TRAIL_WRIST = 10; // right wrist
 // To support left-handed golfers later: swap these two constants — nothing else changes.
 
 // ─── Confidence thresholds (per SRD) ────────────────────────────────────────
-export const CONFIDENCE_TRUST = 0.7; // full trust — include in fault calculation
-export const CONFIDENCE_LOW   = 0.5; // low confidence — draw gray "?" node, exclude from faults
+export const CONFIDENCE_TRUST = 0.55; // full trust — include in fault calculation
+export const CONFIDENCE_LOW   = 0.35; // low confidence — draw gray "?" node, exclude from faults
 
 // ─── Velocity tuning ────────────────────────────────────────────────────────
 const TOP_SEARCH_MULTIPLIER = 2.0; // only search for top-of-swing minimum after velocity
@@ -96,7 +96,7 @@ export async function detectSwingPhases(
     const pose = await getPoseAtTime(video, canvas, ctx, detector, t);
     if (pose) {
       const w = getWristMidpoint(pose);
-      if (w.confidence > 0.3) coarse.push({ time: t, x: w.x, y: w.y });
+      if (w.confidence > 0.2) coarse.push({ time: t, x: w.x, y: w.y });
     }
   }
 
@@ -115,8 +115,12 @@ export async function detectSwingPhases(
 
   // Midpoint of peak interval ≈ impact time
   const swingCenter = (coarse[peakInterval - 1].time + coarse[peakInterval].time) / 2;
-  const swingStart  = Math.max(0,        swingCenter - 2.0); // 2s before impact catches address
-  const swingEnd    = Math.min(duration, swingCenter + 1.0); // 1s after impact catches follow-through
+  // Scale window with video duration so slow-motion videos (8–12 s) are fully covered.
+  // Normal 3 s swing → 2.0 + 1.0 s (unchanged). Slow-mo 10 s → 4.5 + 2.5 s.
+  const windowBefore = Math.max(2.0, duration * 0.45);
+  const windowAfter  = Math.max(1.0, duration * 0.25);
+  const swingStart  = Math.max(0,        swingCenter - windowBefore);
+  const swingEnd    = Math.min(duration, swingCenter + windowAfter);
 
   // ── PASS 2: Dense scan (20 frames within swingStart→swingEnd) ─────────────
   // Goal: build a velocity curve over the swing window and run the state machine.

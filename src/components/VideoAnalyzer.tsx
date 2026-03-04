@@ -29,12 +29,15 @@ declare global {
   }
 }
 
+export type ShotShape = 'slice' | 'pull' | 'push' | 'hook' | 'thin' | 'chunk' | 'shank' | 'topped';
+
 interface Fault {
   name: string;
   phase: string;
   description: string;
   drill: string;
   severity: 'red' | 'yellow';
+  shotShapes: ShotShape[];  // shot outcomes caused by this fault
 }
 
 interface AnalysisResult {
@@ -45,6 +48,7 @@ interface AnalysisResult {
   assessedCheckNames: string[];  // which checks were actually assessed
   assessedCount:      number;
   totalChecks:        number;
+  shankRisk:          boolean;   // true when multiple impact faults suggest shank territory
 }
 
 interface TempoResult {
@@ -173,8 +177,9 @@ function calculateFaults(
     if (Math.abs(addrLS.y - addrRS.y) / frameHeight > 0.08) {
       faults.push({
         name: 'Shoulder Tilt at Address', phase: 'Address', severity: 'yellow',
-        description: 'Your shoulders are not level at address.',
+        description: 'Your shoulders are not level at address. This pre-sets a compensating move through the swing.',
         drill: 'Place a club across your shoulders in front of a mirror. Practice until the club sits parallel to the ground.',
+        shotShapes: ['push', 'pull'],
       });
       score -= 15;
     }
@@ -193,8 +198,9 @@ function calculateFaults(
       if ((topLS.x - addrLS2.x) / frameWidth > 0.08) {
         faults.push({
           name: 'Reverse Pivot', phase: 'Top', severity: 'red',
-          description: 'Your weight is shifting toward the target on the backswing.',
-          drill: 'Stand with your back against a wall. Your trail hip should graze the wall on the backswing.',
+          description: 'Your weight is shifting toward the target on the backswing. This causes you to fall back through impact, robbing power and direction.',
+          drill: 'Stand with your back against a wall. Feel your trail hip graze the wall on the backswing — pressure should load into your trail foot.',
+          shotShapes: ['slice', 'push', 'topped'],
         });
         score -= 20;
       }
@@ -213,8 +219,9 @@ function calculateFaults(
     if ((addrNose.y - impNose.y) / frameHeight > 0.06) {
       faults.push({
         name: 'Head Up at Impact', phase: 'Impact', severity: 'red',
-        description: 'Your head is rising before impact — coming out of the shot.',
-        drill: 'Focus on the back of the ball until after impact. Put a tee in the ground and watch it after the swing.',
+        description: 'Your head is rising before impact — you\'re coming out of the shot early. The club face opens and the path goes off-plane at the worst possible moment.',
+        drill: 'Place a tee in the ground at the ball position. Keep your eyes on that tee until you hear the club pass through. "Watch the tee disappear."',
+        shotShapes: ['thin', 'shank', 'slice'],
       });
       score -= 20;
     }
@@ -233,8 +240,9 @@ function calculateFaults(
       if (Math.abs(addrLH.x - impLH.x) / frameWidth > 0.1) {
         faults.push({
           name: 'Early Extension', phase: 'Impact', severity: 'red',
-          description: 'Your hips are thrusting toward the ball through impact.',
-          drill: 'Place a headcover behind your trail heel at address. Keep your hips back and rotate around your spine through impact.',
+          description: 'Your hips are thrusting toward the ball through impact. The club is forced off-plane and the hosel leads the face — the most common cause of shanks.',
+          drill: 'Set up with your trail glute touching a wall. Maintain that contact through impact. Your hips rotate, they don\'t lunge forward.',
+          shotShapes: ['shank', 'chunk', 'thin'],
         });
         score -= 20;
       }
@@ -248,14 +256,18 @@ function calculateFaults(
   const phaseOrder = ['Address', 'Takeaway', 'Top', 'Impact', 'Follow-Through'];
   faults.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
 
+  // Shank risk: any fault that lists 'shank' as a shot shape
+  const shankRisk = faults.some(f => f.shotShapes.includes('shank'));
+
   return {
     score:              Math.max(0, score),
-    faults:             faults.slice(0, 2),
+    faults,
     phases:             phaseOrder,
     skippedChecks,
     assessedCheckNames,
     assessedCount:      assessedCheckNames.length,
     totalChecks:        TOTAL_CHECKS,
+    shankRisk,
   };
 }
 
@@ -781,6 +793,7 @@ export default function VideoAnalyzer() {
           faults={result.faults}
           skippedChecks={result.skippedChecks}
           assessedChecks={result.assessedCheckNames}
+          shankRisk={result.shankRisk}
           onNext={handleNext}
           onPrev={handlePrev}
           isFirst={walkthroughStep === 1}
@@ -798,6 +811,7 @@ export default function VideoAnalyzer() {
           faults={result.faults}
           skippedChecks={result.skippedChecks}
           assessedChecks={result.assessedCheckNames}
+          shankRisk={result.shankRisk}
           swingPath={swingPathResult ?? undefined}
           angles={activeAngles ?? undefined}
           onNext={() => {}}

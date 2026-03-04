@@ -2788,22 +2788,27 @@ body {
 .prc-angle-label  { font-size: 0.7rem; color: var(--text-secondary); line-height: 1.3; margin-bottom: 2px; }
 .prc-angle-target { font-size: 0.65rem; color: var(--text-muted, #484f58); }
 
-/* ── Navigation buttons ──────────────────────────────────────── */
+/* ── Navigation buttons (sticky at bottom of viewport) ──────── */
 .prc-nav {
   display: grid;
   grid-template-columns: 1fr 2fr;
   gap: 0;
   border-top: 1px solid var(--border);
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  background: var(--bg-surface);
 }
 
 .prc-nav-btn {
   background: none;
   border: none;
-  padding: 14px;
-  font-size: 0.95rem;
-  font-weight: 600;
+  padding: 16px;
+  font-size: 1rem;
+  font-weight: 700;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  min-height: 54px;
 }
 
 .prc-prev { color: var(--text-secondary); border-right: 1px solid var(--border); }
@@ -2812,6 +2817,66 @@ body {
 
 .prc-next { color: var(--text-link); }
 .prc-next:hover { background: rgba(88,166,255,0.08); }
+
+/* ── Shank alert ─────────────────────────────────────────────── */
+.prc-shank-alert {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 14px 16px;
+  background: rgba(255,59,48,0.12);
+  border-bottom: 1px solid rgba(255,59,48,0.3);
+}
+.prc-shank-icon { font-size: 1.6rem; flex-shrink: 0; }
+.prc-shank-alert strong { color: #ff3b30; display: block; margin-bottom: 4px; }
+.prc-shank-alert p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; }
+
+/* ── Shot shape badges ───────────────────────────────────────── */
+.prc-shot-shapes {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0 6px;
+}
+.prc-shot-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1.5px solid;
+  letter-spacing: 0.03em;
+  background: transparent;
+}
+
+/* ── Ideal position box ──────────────────────────────────────── */
+.prc-ideal-box {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: rgba(88,166,255,0.06);
+  border: 1px solid rgba(88,166,255,0.15);
+  border-radius: 10px;
+}
+.prc-ideal-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-link);
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.prc-ideal-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.prc-ideal-list li {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
 
 /* ── Result actions (tempo + buttons row) ────────────────────── */
 .result-actions {

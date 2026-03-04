@@ -100,13 +100,33 @@ export default function OverlayCanvas({
 
       const nativeW = video.videoWidth  || canvas.width;
       const nativeH = video.videoHeight || canvas.height;
-      const scaleX  = canvas.width  / nativeW;
-      const scaleY  = canvas.height / nativeH;
+
+      // Account for object-fit:contain letterboxing/pillarboxing.
+      // The canvas covers the full container but the video content may be centered
+      // with black bars — keypoints must be offset to match.
+      const videoAspect  = nativeW / nativeH;
+      const canvasAspect = canvas.width / canvas.height;
+      let displayW: number, displayH: number, offsetX: number, offsetY: number;
+      if (videoAspect > canvasAspect) {
+        // Wider than container → letterbox (bars top/bottom)
+        displayW = canvas.width;
+        displayH = canvas.width / videoAspect;
+        offsetX  = 0;
+        offsetY  = (canvas.height - displayH) / 2;
+      } else {
+        // Taller than container → pillarbox (bars left/right)
+        displayH = canvas.height;
+        displayW = canvas.height * videoAspect;
+        offsetX  = (canvas.width - displayW) / 2;
+        offsetY  = 0;
+      }
+      const scaleX = displayW / nativeW;
+      const scaleY = displayH / nativeH;
 
       const scaledKps = kps.map((kp: any) => ({
         ...kp,
-        x: kp.x * scaleX,
-        y: kp.y * scaleY,
+        x: kp.x * scaleX + offsetX,
+        y: kp.y * scaleY + offsetY,
       }));
 
       // Always draw user skeleton

@@ -9,6 +9,7 @@ interface Fault {
   description: string;
   drill:       string;
   severity:    'red' | 'yellow';
+  shotShapes:  string[];
 }
 
 interface AnalysisResult {
