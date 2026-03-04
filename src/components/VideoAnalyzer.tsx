@@ -5,7 +5,6 @@ import {
   SwingFrame,
   CONFIDENCE_TRUST,
   CONFIDENCE_LOW,
-  seekTo,
 } from './SwingStateMachine';
 import DualVideoView, { SwingViewData } from './DualVideoView';
 import OverlayCanvas from './OverlayCanvas';
@@ -347,9 +346,8 @@ export default function VideoAnalyzer() {
   const [detectedPhases, setDetectedPhases] = useState<DetectedPhases | null>(null);
 
   // v3 Screen state (null = pre-analysis)
-  const [screen, setScreen]           = useState<V3Screen | null>(null);
-  const [phaseImages, setPhaseImages] = useState<Record<string, string>>({});
-  const [speaking, setSpeaking]       = useState(false);
+  const [screen, setScreen]   = useState<V3Screen | null>(null);
+  const [speaking, setSpeaking] = useState(false);
 
   // Swing path data (computed for history/future use, not displayed in v3 screens)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -390,7 +388,6 @@ export default function VideoAnalyzer() {
       setAllFrames([]);
       setDetectedPhases(null);
       setScreen(null);
-      setPhaseImages({});
       setSwingArc([]);
       setReferencePlane(null);
       setSwingPathResult(null);
@@ -411,7 +408,6 @@ export default function VideoAnalyzer() {
     setAllFrames([]);
     setDetectedPhases(null);
     setScreen(null);
-    setPhaseImages({});
     setSwingArc([]);
     setReferencePlane(null);
     setSwingPathResult(null);
@@ -424,7 +420,7 @@ export default function VideoAnalyzer() {
     setVideoFile(null); setVideoUrl(''); setVideoMeta(null);
     setResult(null); setTempoResult(null); setProgressMsg('');
     setAllFrames([]); setDetectedPhases(null);
-    setScreen(null); setPhaseImages({});
+    setScreen(null);
     setSwingArc([]); setReferencePlane(null); setSwingPathResult(null);
     setPhaseAngles({});
     setView2File(null); setView2Url(''); setResult2(null); setAllFrames2([]); setPhases2(null);
@@ -454,27 +450,6 @@ export default function VideoAnalyzer() {
     } else if (result) {
       speakResult(result);
     }
-  };
-
-  // ── Phase frame capture ────────────────────────────────────────────────────
-  const capturePhaseImages = async (
-    videoEl:  HTMLVideoElement,
-    canvasEl: HTMLCanvasElement,
-    phases:   DetectedPhases,
-  ): Promise<Record<string, string>> => {
-    const ctx = canvasEl.getContext('2d')!;
-    const images: Record<string, string> = {};
-    for (const [key, frame] of [
-      ['address',       phases.address],
-      ['top',           phases.top],
-      ['impact',        phases.impact],
-      ['followThrough', phases.followThrough],
-    ] as [string, SwingFrame][]) {
-      await seekTo(videoEl, frame.time);
-      ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
-      images[key] = canvasEl.toDataURL('image/jpeg', 0.75);
-    }
-    return images;
   };
 
   // ── Core analysis engine ──────────────────────────────────────────────────
@@ -515,7 +490,7 @@ export default function VideoAnalyzer() {
     if (!videoRef.current || !canvasRef.current) return;
     setAnalyzing(true);
     setResult(null); setTempoResult(null); setAllFrames([]); setDetectedPhases(null);
-    setScreen(null); setPhaseImages({}); setSwingArc([]); setReferencePlane(null);
+    setScreen(null); setSwingArc([]); setReferencePlane(null);
 
     try {
       const out = await runAnalysis(videoRef.current, canvasRef.current, setProgressMsg, swingAngle);
@@ -585,12 +560,6 @@ export default function VideoAnalyzer() {
       });
       localStorage.setItem('swingHistory', JSON.stringify(history.slice(0, 50)));
 
-      // Capture phase frame images for AnnotatedVideoFrame
-      const imgs = await capturePhaseImages(
-        videoRef.current!, canvasRef.current!, out.phases,
-      );
-      setPhaseImages(imgs);
-
       // Launch v3 replay screen
       setScreen('replay');
 
@@ -654,7 +623,7 @@ export default function VideoAnalyzer() {
   if (screen && result && detectedPhases) {
     return (
       <div className="v3-screen-container">
-        {/* Hidden video + canvas kept in DOM so seekTo still works */}
+        {/* Hidden video + canvas kept in DOM for any future seek operations */}
         <video ref={videoRef} src={videoUrl} playsInline muted
           style={{ display: 'none' }} crossOrigin="anonymous" />
         <canvas ref={canvasRef} style={{ display: 'none' }} />
@@ -664,6 +633,8 @@ export default function VideoAnalyzer() {
             videoUrl={videoUrl}
             allFrames={allFrames}
             detectedPhases={detectedPhases}
+            frameWidth={videoMeta?.width ?? 640}
+            frameHeight={videoMeta?.height ?? 480}
             shankRisk={result.shankRisk}
             faultCount={result.faults.length}
             onNavigate={setScreen}
@@ -681,7 +652,7 @@ export default function VideoAnalyzer() {
         {screen === 'chain' && (
           <CauseChainScreen
             result={result}
-            phaseImages={phaseImages}
+            videoUrl={videoUrl}
             detectedPhases={detectedPhases}
             frameWidth={videoMeta?.width ?? 640}
             frameHeight={videoMeta?.height ?? 480}

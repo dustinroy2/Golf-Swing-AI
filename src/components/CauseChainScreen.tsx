@@ -21,7 +21,7 @@ interface AnalysisResult {
 
 interface Props {
   result:         AnalysisResult;
-  phaseImages:    Record<string, string>;   // 'address' | 'top' | 'impact' | 'followThrough' → dataURL
+  videoUrl:       string;
   detectedPhases: DetectedPhases;
   frameWidth:     number;
   frameHeight:    number;
@@ -92,7 +92,7 @@ function getAnnotations(
 }
 
 export default function CauseChainScreen({
-  result, phaseImages, detectedPhases, frameWidth, frameHeight, onNavigate,
+  result, videoUrl, detectedPhases, frameWidth, frameHeight, onNavigate,
 }: Props) {
   const [activeIdx, setActiveIdx] = useState(0);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -209,8 +209,8 @@ export default function CauseChainScreen({
       } as React.CSSProperties}>
         {faults.map((fault, i) => {
           const coaching  = FAULT_COACHING[fault.name];
-          const imgKey    = coaching?.phaseKey ?? 'impact';
-          const imgUrl    = phaseImages[imgKey] ?? '';
+          const phaseKey  = (coaching?.phaseKey ?? 'impact') as 'address' | 'top' | 'impact' | 'followThrough';
+          const phaseTime = detectedPhases[phaseKey]?.time ?? 0;
           const anns      = getAnnotations(fault.name, detectedPhases, frameWidth, frameHeight);
 
           return (
@@ -225,7 +225,8 @@ export default function CauseChainScreen({
               }}
             >
               <AnnotatedVideoFrame
-                imgUrl={imgUrl}
+                videoUrl={videoUrl}
+                phaseTime={phaseTime}
                 annotations={anns}
                 phase={fault.phase}
               />
